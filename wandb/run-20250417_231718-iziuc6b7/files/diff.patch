@@ -1,0 +1,13 @@
+diff --git a/examples/ppo_example.py b/examples/ppo_example.py
+index 12de5d2..0194e0c 100644
+--- a/examples/ppo_example.py
++++ b/examples/ppo_example.py
+@@ -6,7 +6,7 @@ from wandb.integration.sb3 import WandbCallback
+ import wandb
+ 
+ # toggle this to train or evaluate
+-train = False
++train = True
+ 
+ if train:
+     run = wandb.init(

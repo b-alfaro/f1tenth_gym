@@ -1,0 +1,43 @@
+{
+  "os":  "macOS-10.16-x86_64-i386-64bit",
+  "python":  "CPython 3.9.21",
+  "startedAt":  "2025-04-18T03:17:18.258410Z",
+  "program":  "/Users/bryanalfaro/Documents/Problem_Sets/ese6500_final/f1tenth_gym/examples/ppo_example.py",
+  "codePath":  "examples/ppo_example.py",
+  "git":  {
+    "remote":  "https://github.com/b-alfaro/f1tenth_gym.git",
+    "commit":  "cf90f3e6f6df2d18e9617450ff5036acc9f630e5"
+  },
+  "email":  "balfaro@seas.upenn.edu",
+  "root":  "/Users/bryanalfaro/Documents/Problem_Sets/ese6500_final/f1tenth_gym",
+  "host":  "Mac.fios-router.home",
+  "executable":  "/Users/bryanalfaro/opt/anaconda3/envs/final6500/bin/python",
+  "codePathLocal":  "examples/ppo_example.py",
+  "cpu_count":  12,
+  "cpu_count_logical":  12,
+  "disk":  {
+    "/":  {
+      "total":  "494384795648",
+      "used":  "448773677056"
+    },
+    "/System/Volumes/Data":  {
+      "total":  "494384795648",
+      "used":  "448773677056"
+    }
+  },
+  "memory":  {
+    "total":  "38654705664"
+  },
+  "cpu":  {
+    "count":  12,
+    "countLogical":  12
+  },
+  "apple":  {
+    "name":  "Unknown",
+    "ecpuCores":  6,
+    "pcpuCores":  6,
+    "gpuCores":  18,
+    "memoryGb":  36,
+    "ramTotalBytes":  "38654705664"
+  }
+}

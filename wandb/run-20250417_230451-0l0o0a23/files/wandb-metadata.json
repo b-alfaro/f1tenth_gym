@@ -1,0 +1,16 @@
+{
+  "os":  "macOS-10.16-x86_64-i386-64bit",
+  "python":  "CPython 3.8.20",
+  "startedAt":  "2025-04-18T03:04:51.479601Z",
+  "program":  "examples/ppo_example.py",
+  "codePath":  "examples/ppo_example.py",
+  "git":  {
+    "remote":  "https://github.com/b-alfaro/f1tenth_gym.git",
+    "commit":  "cf90f3e6f6df2d18e9617450ff5036acc9f630e5"
+  },
+  "email":  "balfaro@seas.upenn.edu",
+  "root":  "/Users/bryanalfaro/Documents/Problem_Sets/ese6500_final/f1tenth_gym",
+  "host":  "Mac.fios-router.home",
+  "executable":  "/Users/bryanalfaro/opt/anaconda3/envs/final6500/bin/python",
+  "codePathLocal":  "examples/ppo_example.py"
+}
