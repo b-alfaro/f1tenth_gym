@@ -170,8 +170,11 @@ cython_debug/
 #.idea/
 *.zip
 
-**/maps/*
+# **/maps/*
 
 examples/wandb
 examples/models
 examples/runs
+
+**/wandb/*
+wandb/

@@ -1,2 +1,2 @@
 from .f110_env import F110Env  # noqa: F401 This is needed to make easy imports work
-from .parking_env import ParkingEnv
+from .park_env import ParkEnv

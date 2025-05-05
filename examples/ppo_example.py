@@ -6,7 +6,7 @@ from wandb.integration.sb3 import WandbCallback
 import wandb
 
 # toggle this to train or evaluate
-train = True
+train = False
 
 if train:
     run = wandb.init(
@@ -18,7 +18,7 @@ if train:
     env = gym.make(
         "f1tenth_gym:f1tenth-v0",
         config={
-            "map": "Spielberg",
+            "map": "race3",
             "num_agents": 1,
             "timestep": 0.01,
             "num_beams": 36,
@@ -42,12 +42,12 @@ if train:
     run.finish()
 
 else:
-    model_path = "models/3wlusg06/model.zip"
+    model_path = "models/6y3obor6/2025-04-23_17:04:52/model.zip"
     model = PPO.load(model_path, print_system_info=True, device="cpu")
     eval_env = gym.make(
         "f1tenth_gym:f1tenth-v0",
         config={
-            "map": "Spielberg",
+            "map": "race3",
             "num_agents": 1,
             "timestep": 0.01,
             "num_beams": 36,
