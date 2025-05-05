@@ -46,7 +46,7 @@ class F110Env(gym.Env):
     """
     OpenAI gym environment for F1TENTH
 
-    Env should be initialized by calling gym.make('f110_gym:f110-v0', **kwargs)
+    Env should be initialized by calling gym.make('f1tenth_gym:f110-v0', **kwargs)
 
     Args:
         kwargs:
