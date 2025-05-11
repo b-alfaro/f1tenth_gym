@@ -327,10 +327,29 @@ class VectorObservation(Observation):
             "lap_count": lap_count,
         }
 
+        scan_size = self.env.unwrapped.sim.agents[0].scan_simulator.num_beams    
+        obs_size_dict = {
+            "scan": scan_size,
+            "pose_x": 1,
+            "pose_y": 1,
+            "pose_theta": 1,
+            "linear_vel_x": 1,
+            "linear_vel_y": 1,
+            "ang_vel_z": 1,
+            "delta": 1,
+            "beta": 1,
+            "collision": 1,
+            "lap_time": 1,
+            "lap_count": 1,
+        }
+
         # add agent's observation to multi-agent observation
         vec_obs = []
         for k in self.features:
-            vec_obs.extend(list(agent_obs[k]))
+            if obs_size_dict[k] > 1:
+                vec_obs.extend(list(agent_obs[k]))
+            else:
+                vec_obs.append(agent_obs[k])
 
         return np.array(vec_obs)
 
@@ -371,6 +390,19 @@ def observation_factory(env, type: str | None, **kwargs) -> Observation:
     elif type == "rl":
         features = [
             "scan",
+        ]
+        return VectorObservation(env, features=features)
+    elif type == "rl_parking":
+        features = [
+            "scan",
+            "pose_x",
+            "pose_y",
+            "pose_theta",
+            "linear_vel_x",
+            "linear_vel_y",
+            "ang_vel_z",
+            "delta",
+            "beta",
         ]
         return VectorObservation(env, features=features)
     else:

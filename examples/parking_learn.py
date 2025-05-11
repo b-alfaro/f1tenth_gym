@@ -41,7 +41,7 @@ def main():
             "num_beams": 36,
             "integrator": "rk4",
             "control_input": ["speed", "steering_angle"],
-            "observation_config": {"type": "rl"},
+            "observation_config": {"type": "rl_parking"},
             "reset_config": {"type": "rl_random_static"},
         },
     )

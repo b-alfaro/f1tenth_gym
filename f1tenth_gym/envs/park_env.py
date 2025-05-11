@@ -27,7 +27,9 @@ class ParkEnv(F110Env):
 
         # read in csv file that contains information about potential parking spots
         track_dir = find_track_dir(self.map)
-        parking_file = os.path.join(track_dir, "possible_targets.csv")
+
+        ## for now, only doing parking along 1 wall
+        parking_file = os.path.join(track_dir, "possible_targets_wall1.csv")
         self.parking_spots = np.genfromtxt(parking_file, delimiter=',')
 
     def _check_done(self):
@@ -71,7 +73,8 @@ class ParkEnv(F110Env):
             ori_error = 1e3
         
         reward += self.POS_SCALE * np.exp(-pos_error ** 2)
-        reward += self.ORI_SCALE * np.exp(-ori_error ** 2)
+        if pos_error < 1.0:
+            reward += self.ORI_SCALE * np.exp(-ori_error ** 2)
         reward += self.CRASH_SCALE * float(self.collisions[i])
         return reward
 
@@ -81,12 +84,17 @@ class ParkEnv(F110Env):
         obs, reward, done, truncated, info = super().step(action)
         # add in helpful info stats
         if hasattr(self, 'goal_pos'):
-            info['custom/position_error'] = np.linalg.norm(
-                self.sim.agent_poses[self.ego_idx, :2] - self.goal_pos, 2)
+            pos_error = self.sim.agent_poses[self.ego_idx, :2] - self.goal_pos
+            info['custom/position_error'] = np.linalg.norm(pos_error, 2)
             yaw = self.poses_theta[self.ego_idx]
             yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
-            ori_error = np.abs(yaw - self.goal_ori)
-            info['custom/ori_error'] = ori_error
+            ori_error = yaw - self.goal_ori
+            info['custom/ori_error'] = np.abs(ori_error)
+
+            # modify observations to be in error coordinates
+            obs[self.num_beams] = pos_error[0]
+            obs[self.num_beams+1] = pos_error[1]
+            obs[self.num_beams+2] = ori_error
         return obs, reward, done, truncated, info
     
     def _update_map_from_track(self):
@@ -153,4 +161,66 @@ class ParkEnv(F110Env):
             render_mode=self.render_mode,
             render_fps=self.metadata["render_fps"],
         )
-        return super().reset(seed=seed, options=options)
+
+        if seed is not None:
+            np.random.seed(seed=seed)
+        super().reset(seed=seed)
+
+        # reset counters and data members
+        self.current_time = 0.0
+        self.collisions = np.zeros((self.num_agents,))
+        self.num_toggles = 0
+        self.near_start = True
+        self.near_starts = np.array([True] * self.num_agents)
+        self.toggle_list = np.zeros((self.num_agents,))
+
+        # states after reset
+        # if options is not None and "poses" in options:
+        #     poses = options["poses"]
+        # else:
+        #     poses = self.reset_fn.sample()
+
+        # modified: sample another nearby parking spot (along the same wall) and have the car
+        # start 0.5 m away from it - this is so that we don't have to worry about difficulties that 
+        # come up due to the car spawning in a different corridor than the parking spot
+        rand_idx = np.arange(self.parking_spots.shape[0])
+        rand_idx = np.random.choice(rand_idx)
+        rand_spot = self.parking_spots[rand_idx]
+        x, y, yaw = rand_spot
+        R = np.array([[np.cos(yaw), -np.sin(yaw)],
+                    [np.sin(yaw),  np.cos(yaw)]])
+        local_pt = np.array([0, 0.5])
+        poses = np.zeros((3,))
+        poses[:2] = R @ local_pt[:2] + np.array([x, y])
+        poses[-1] = yaw
+        poses = np.expand_dims(poses, axis=0)
+
+        assert isinstance(poses, np.ndarray) and poses.shape == (
+            self.num_agents,
+            3,
+        ), "Initial poses must be a numpy array of shape (num_agents, 3)"
+
+        self.start_xs = poses[:, 0]
+        self.start_ys = poses[:, 1]
+        self.start_thetas = poses[:, 2]
+        self.start_rot = np.array(
+            [
+                [
+                    np.cos(-self.start_thetas[self.ego_idx]),
+                    -np.sin(-self.start_thetas[self.ego_idx]),
+                ],
+                [
+                    np.sin(-self.start_thetas[self.ego_idx]),
+                    np.cos(-self.start_thetas[self.ego_idx]),
+                ],
+            ]
+        )
+
+        # call reset to simulator
+        self.sim.reset(poses)
+
+        # get no input observations
+        action = np.zeros((self.num_agents, 2))
+        obs, _, _, _, info = self.step(action)
+
+        return obs, info
