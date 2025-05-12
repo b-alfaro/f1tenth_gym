@@ -51,7 +51,7 @@ def main():
     )
 
     # will be faster on cpu
-    name = datetime.date.today("%I:%M%p_%B-%d-%Y")
+    name = datetime.datetime.now().strftime("%I:%M%p_%B-%d-%Y")
     model = PPO(
         "MlpPolicy", env, verbose=1, tensorboard_log=f"runs/{name}", device="cpu", seed=42
     )
