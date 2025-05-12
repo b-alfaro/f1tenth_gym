@@ -10,7 +10,8 @@ from stable_baselines3 import PPO
 
 from wandb.integration.sb3 import WandbCallback
 import wandb
-
+import argparse
+import datetime
 
 class CustomWandCallback(WandbCallback):
     def __init__(self, *args, **kwargs):
@@ -25,7 +26,10 @@ class CustomWandCallback(WandbCallback):
         return super()._on_step()
 
 def main():
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--save_freq', type=int, default=1_000_000)
+    parser.add_argument('--timesteps', type=int, default=1_000_000)
+    args = parser.parse_args()
     run = wandb.init(
         project="parking_ppo",
         sync_tensorboard=True,
@@ -47,13 +51,14 @@ def main():
     )
 
     # will be faster on cpu
+    name = datetime.date.today("%I:%M%p_%B-%d-%Y")
     model = PPO(
-        "MlpPolicy", env, verbose=1, tensorboard_log=f"runs/{run.id}", device="cpu", seed=42
+        "MlpPolicy", env, verbose=1, tensorboard_log=f"runs/{name}", device="cpu", seed=42
     )
     model.learn(
-        total_timesteps=1_000_000,
+        total_timesteps=args.timesteps,
         callback=CustomWandCallback(
-            gradient_save_freq=0, model_save_path=f"models/{run.id}", verbose=2
+            gradient_save_freq=0, model_save_path=f"models/{name}", verbose=2, model_save_freq=args.save_freq
         ),
     )
     run.finish()

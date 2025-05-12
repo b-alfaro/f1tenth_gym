@@ -23,7 +23,7 @@ class ParkEnv(F110Env):
                 shape=(1,2),
                 dtype=np.float32,
         )
-        self.action_range = np.array([self.params['s_max'], 2.0]) # capping speed at 2 m/s
+        self.action_range = np.array([[self.params['s_max'], 2.0]]) # capping speed at 2 m/s
 
         # read in csv file that contains information about potential parking spots
         track_dir = find_track_dir(self.map)
