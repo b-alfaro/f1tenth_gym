@@ -24,6 +24,14 @@ class ParkEnv(F110Env):
                 dtype=np.float32,
         )
         self.action_range = np.array([[self.params['s_max'], 2.0]]) # capping speed at 2 m/s
+        self.highest_seen_reward = 0
+        print('Action ranges:')
+        print(self.action_range)
+
+        print('Observation space:')
+        print(self.observation_space)
+
+        self.total_steps = 0
 
         # read in csv file that contains information about potential parking spots
         track_dir = find_track_dir(self.map)
@@ -49,19 +57,22 @@ class ParkEnv(F110Env):
         if hasattr(self, 'goal_pos'):
             yaw = self.poses_theta[self.ego_idx]
             yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
-            done = done or (np.linalg.norm(self.sim.agent_poses[self.ego_idx, :2] - self.goal_pos, 2) < pos_eps
-                            and np.abs(yaw - self.goal_ori) < ori_eps)
+            done = done or ((np.linalg.norm(self.sim.agent_poses[self.ego_idx, :2] - self.goal_pos, 2) < pos_eps
+                            and np.abs(yaw - self.goal_ori) < ori_eps))
         
         done = done or self.collisions[self.ego_idx]
-        return done, False # second return needed for super's step func
+        return bool(done), False # second return needed for super's step func
     
     # reward scales
-    POS_SCALE = 1.0
-    ORI_SCALE = 1.0
+    POS_SCALE = 10.0
+    ORI_SCALE = 10.0
     CRASH_SCALE = -1.0
+    POSE_CURRICULUM = int(2e5)
     def _get_reward(self):
         reward = 0.0
         i = self.ego_idx
+        pos_radius = 3.0 * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
+        ori_radius = np.deg2rad(45.0) * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
         if hasattr(self, 'goal_pos'):
             pos_error = np.linalg.norm(self.sim.agent_poses[i, :2] - self.goal_pos, 2)
             yaw = self.poses_theta[i]
@@ -70,18 +81,24 @@ class ParkEnv(F110Env):
         else:
             # set to large numbers so exponent is effectively 0
             pos_error = 1e3
-            ori_error = 1e3
+            ori_error = np.pi
         
-        reward += self.POS_SCALE * np.exp(-pos_error ** 2)
-        if pos_error < 1.0:
-            reward += self.ORI_SCALE * np.exp(-ori_error ** 2)
+        reward += self.POS_SCALE * np.exp(-(pos_error) ** 2 / pos_radius)
+        if pos_error < 0.1:
+            reward += self.ORI_SCALE * np.exp(-(ori_error) ** 2 / ori_radius)
+
+        self.highest_seen_reward = max(reward, self.highest_seen_reward)
+        reward /= self.highest_seen_reward
         reward += self.CRASH_SCALE * float(self.collisions[i])
         return reward
 
     def step(self, action):
         # remap to meaningful values
         action = action * self.action_range
+        self.total_steps += 1
         obs, reward, done, truncated, info = super().step(action)
+        # add in for timeout/truncation after 30 sec
+        truncated = self.current_time > 30.0
         # add in helpful info stats
         if hasattr(self, 'goal_pos'):
             pos_error = self.sim.agent_poses[self.ego_idx, :2] - self.goal_pos
@@ -92,9 +109,8 @@ class ParkEnv(F110Env):
             info['custom/ori_error'] = np.abs(ori_error)
 
             # modify observations to be in error coordinates
-            obs[self.num_beams] = pos_error[0]
-            obs[self.num_beams+1] = pos_error[1]
-            obs[self.num_beams+2] = ori_error
+            obs['pose'][:2] = pos_error
+            obs['pose'][-1] = ori_error
         return obs, reward, done, truncated, info
     
     def _update_map_from_track(self):
@@ -116,7 +132,7 @@ class ParkEnv(F110Env):
         y /= scale
         return np.column_stack((x, y)).astype(np.int32)
 
-    def _generate_parking(self, clearance=0.3):
+    def _generate_parking(self, clearance=0.5):
         rand_idx = np.arange(self.parking_spots.shape[0])
         rand_idx = np.random.choice(rand_idx)
         rand_spot = self.parking_spots[rand_idx]
@@ -173,6 +189,7 @@ class ParkEnv(F110Env):
         self.near_start = True
         self.near_starts = np.array([True] * self.num_agents)
         self.toggle_list = np.zeros((self.num_agents,))
+        # self.highest_seen_reward = 0
 
         # states after reset
         # if options is not None and "poses" in options:

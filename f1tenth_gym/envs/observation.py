@@ -354,6 +354,54 @@ class VectorObservation(Observation):
         return np.array(vec_obs)
 
 
+class FeaturesObservationRL(Observation):
+    def __init__(self, env, features: List[str]):
+        super().__init__(env)
+        self.features = features
+        self.large_num = 1e30
+ 
+    def space(self):
+        scan_size = self.env.unwrapped.sim.agents[0].scan_simulator.num_beams
+        scan_range = (
+            self.env.unwrapped.sim.agents[0].scan_simulator.max_range + 0.5
+        )
+
+        ego_dict = {
+            'scan': gym.spaces.Box(
+                low=0.0, high=scan_range, shape=(scan_size,), dtype=np.float32
+            ),
+            'pose': gym.spaces.Box(
+                low=-self.large_num, high=self.large_num, shape=(3,), dtype=np.float32
+            ),
+            'vel': gym.spaces.Box(
+                low=-self.large_num, high=self.large_num, shape=(3,), dtype=np.float32
+            ),
+            'heading': gym.spaces.Box(
+                low=-self.large_num, high=self.large_num, shape=(2,), dtype=np.float32
+            )
+        }
+        return gym.spaces.Dict(ego_dict)
+    
+    def observe(self):
+        scan = self.env.unwrapped.sim.agent_scans[0]
+        agent = self.env.unwrapped.sim.agents[0]
+        std_state = agent.standard_state
+        x, y, theta = std_state["x"], std_state["y"], std_state["yaw"]
+        delta = std_state["delta"]
+        beta = std_state["slip"]
+        vx = std_state["v_x"]
+        vy = std_state["v_y"]
+        angvel = std_state["yaw_rate"]
+        
+        # create agent's observation dict
+        ret = {
+            "scan": scan.astype(np.float32),
+            "pose": np.array((x,y,theta), dtype=np.float32),
+            "vel": np.array((vx,vy,angvel), dtype=np.float32),
+            "heading": np.array((delta, beta), dtype=np.float32)
+        }
+        return ret
+
 def observation_factory(env, type: str | None, **kwargs) -> Observation:
     type = type or "original"
 
@@ -395,15 +443,10 @@ def observation_factory(env, type: str | None, **kwargs) -> Observation:
     elif type == "rl_parking":
         features = [
             "scan",
-            "pose_x",
-            "pose_y",
-            "pose_theta",
-            "linear_vel_x",
-            "linear_vel_y",
-            "ang_vel_z",
-            "delta",
-            "beta",
+            "pose",
+            "vel",
+            "heading",
         ]
-        return VectorObservation(env, features=features)
+        return FeaturesObservationRL(env, features=features)
     else:
         raise ValueError(f"Invalid observation type {type}.")

@@ -164,6 +164,8 @@ class F110Env(gym.Env):
         self.action_space = from_single_to_multi_action_space(
             self.action_type.space, self.num_agents
         )
+        print('Base environment action space:')
+        print(self.action_space)
 
         # reset modes
         self.reset_fn = make_reset_fn(
