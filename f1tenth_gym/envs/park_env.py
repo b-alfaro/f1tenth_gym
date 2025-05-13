@@ -36,12 +36,13 @@ class ParkEnv(F110Env):
         self.waypoint_ori = np.zeros((3,))
         self.waypoint_idx = 0
         self.start_pose = np.zeros((1,3))
+        self.action = np.zeros((1,2))
 
         # read in csv file that contains information about potential parking spots
         track_dir = find_track_dir(self.map)
 
         ## for now, only doing parking along 1 wall
-        parking_file = os.path.join(track_dir, "possible_targets_wall1.csv")
+        parking_file = os.path.join(track_dir, "possible_targets.csv")
         self.parking_spots = np.genfromtxt(parking_file, delimiter=',')
 
     def _check_done(self):
@@ -64,33 +65,39 @@ class ParkEnv(F110Env):
             curr_pos = self.sim.agent_poses[self.ego_idx, :2]
             goal_pos = self.waypoint_pos[self.waypoint_idx]
             goal_ori = self.waypoint_ori[self.waypoint_idx]
+            done = done or (np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and np.abs(yaw - goal_ori) < ori_eps)
             # check if we need have reached one of the first two waypoints
-            if self.waypoint_idx < 2:          
-                if np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and np.abs(yaw - goal_ori) < ori_eps:
-                    self.waypoint_idx += 1 
-            else:
-                done = done or (np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and np.abs(yaw - goal_ori) < ori_eps)
+            # if self.waypoint_idx < 2:          
+            #     if np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and np.abs(yaw - goal_ori) < ori_eps:
+            #         self.waypoint_idx += 1 
+            # else:
+            #     done = done or (np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and np.abs(yaw - goal_ori) < ori_eps)
         
         done = done or self.collisions[self.ego_idx]
         return bool(done), False # second return needed for super's step func
     
     # reward scales
-    POS_SCALE = 10.0
-    ORI_SCALE = 10.0
+    POS_SCALE = 1.0
+    ORI_SCALE = 1.0
     CRASH_SCALE = -1.0
     POSE_CURRICULUM = int(2e5)
     def _get_reward(self):
         reward = 0.0
         i = self.ego_idx
-        pos_radius = 3.0 * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
-        ori_radius = np.deg2rad(45.0) * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
+        pos_radius = 1.0 * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
+        ori_radius = np.deg2rad(30.0) * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
         if hasattr(self, 'waypoint_pos'):
             goal_pos = self.waypoint_pos[self.waypoint_idx]
             goal_ori = self.waypoint_ori[self.waypoint_idx]
-            pos_error = np.linalg.norm(self.sim.agent_poses[i, :2] - goal_pos, 2)
+            goal_pos = goal_pos - self.sim.agent_poses[i, :2]
+            goal_pos = self._world_to_local(goal_pos) # convert to body coords
+            pos_error = np.linalg.norm(goal_pos, 2)
             yaw = self.poses_theta[i]
             yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
             ori_error = np.abs(yaw - goal_ori)
+            # reward for driving in the right direction
+            # reward += float(np.sign(goal_pos[0]) == np.sign(self.action[0, 1]))
+            
         else:
             # set to large numbers so exponent is effectively 0
             pos_error = 1e3
@@ -117,13 +124,14 @@ class ParkEnv(F110Env):
     def step(self, action):
         # remap to meaningful values
         action = action * self.action_range
+        self.action = action
         self.total_steps += 1
         prev_idx = self.waypoint_idx
         obs, reward, done, truncated, info = super().step(action)
         # add a bonus to reward if we got to the next target
         reward += 10.0 * float(prev_idx != self.waypoint_idx)
         # add in for timeout/truncation after 30 sec
-        truncated = self.current_time > 30.0
+        truncated = self.current_time > 10.0
         # add in helpful info stats
         if hasattr(self, 'waypoint_pos'):
             goal_pos = self.waypoint_pos[self.waypoint_idx]
@@ -139,8 +147,8 @@ class ParkEnv(F110Env):
             # obstacle position in the body frame)
             obs['pose'][:2] = self._world_to_local(pos_error)
             obs['pose'][-1] = ori_error
-            obs['waypoint_idx'] = self.waypoint_idx
-            info['custom/waypoint_idx'] = self.waypoint_idx
+            # obs['waypoint_idx'] = self.waypoint_idx
+            # info['custom/waypoint_idx'] = self.waypoint_idx
 
         return obs, reward, done, truncated, info
     
@@ -183,16 +191,24 @@ class ParkEnv(F110Env):
         # third: the parking spot
         waypoint_pos = np.array([[clearance + szx / 2, 1.5 * szy],
                                    [clearance, 1.5 * szy],
-                                   [0.0, 0.0]])
+                                   [0.0, 0.05]])
         waypoint_pos = R @ waypoint_pos.T + T
         self.waypoint_pos = waypoint_pos.T
-        self.waypoint_ori = np.array([yaw, yaw + np.deg2rad(45.0), yaw])
+        self.waypoint_ori = np.array([yaw, yaw + np.deg2rad(30.0), yaw])
         self.waypoint_ori = (self.waypoint_ori + np.pi) % (2 * np.pi) - np.pi
+        self.waypoint_idx = np.random.randint(0,1) + 2
+        # print(self.waypoint_idx)
 
-        start_pos = np.array([[-clearance - szx / 2, 1.5 * szy]])
-        start_pos = R @ start_pos.T + T
-        self.start_pose[0, :2] = start_pos.T
-        self.start_pose[0, -1] = yaw
+        if self.waypoint_idx == 0:
+            start_pos = np.array([[-clearance - szx / 2, 1.5 * szy]])
+            start_pos = R @ start_pos.T + T
+
+            self.start_pose[0, :2] = start_pos.T
+            self.start_pose[0, -1] = yaw
+        else:
+        # self.waypoint_idx = 2
+            self.start_pose[0, :2] = self.waypoint_pos[self.waypoint_idx-1]
+            self.start_pose[0, -1] = self.waypoint_ori[self.waypoint_idx-1]
         
         for dx in dxs:
             # define coordinates of the spot in local coordinates
@@ -218,7 +234,7 @@ class ParkEnv(F110Env):
         '''
         self.update_map(self.map)
         self._generate_parking()
-        self.waypoint_idx = 0
+        # self.waypoint_idx = 0
         self.renderer, self.render_spec = make_renderer(
             params=self.params,
             track=self.track,

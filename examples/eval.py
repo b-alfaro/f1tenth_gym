@@ -8,7 +8,7 @@ import f1tenth_gym.envs
 import argparse
 import numpy as np
 
-def main(n=10, timeout=30):
+def main(n=10, timeout=10):
     '''
     perform eval on n environments with a limit of timeout seconds
     '''
@@ -38,9 +38,11 @@ def main(n=10, timeout=30):
         steps = 0
         while not done and not trunc:
             action, _states = model.predict(obs, deterministic=True)
+            # action = np.zeros((1,2))
             obs, reward, done, trunc, info = eval_env.step(action)
-            print(f'{np.linalg.norm(obs["pose"][:2])}, {np.abs(obs["pose"][-1])}, {reward}')
-            print(obs['waypoint_idx'])
+            print(obs['pose'], reward, eval_env.unwrapped.waypoint_idx)
+            # print(done)
+            # print(obs['waypoint_idx'])
             steps += 1
             eval_env.render()
 
