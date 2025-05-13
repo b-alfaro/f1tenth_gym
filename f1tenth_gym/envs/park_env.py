@@ -32,6 +32,10 @@ class ParkEnv(F110Env):
         print(self.observation_space)
 
         self.total_steps = 0
+        self.waypoint_pos = np.zeros((3,2))
+        self.waypoint_ori = np.zeros((3,))
+        self.waypoint_idx = 0
+        self.start_pose = np.zeros((1,3))
 
         # read in csv file that contains information about potential parking spots
         track_dir = find_track_dir(self.map)
@@ -51,14 +55,21 @@ class ParkEnv(F110Env):
         '''
 
         done = False
-        pos_eps = 0.05 # allowable position error
+        pos_eps = 0.1 # allowable position error
         ori_eps = np.deg2rad(5.0) # allowable ori error
 
-        if hasattr(self, 'goal_pos'):
+        if hasattr(self, 'waypoint_pos'):
             yaw = self.poses_theta[self.ego_idx]
             yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
-            done = done or ((np.linalg.norm(self.sim.agent_poses[self.ego_idx, :2] - self.goal_pos, 2) < pos_eps
-                            and np.abs(yaw - self.goal_ori) < ori_eps))
+            curr_pos = self.sim.agent_poses[self.ego_idx, :2]
+            goal_pos = self.waypoint_pos[self.waypoint_idx]
+            goal_ori = self.waypoint_ori[self.waypoint_idx]
+            # check if we need have reached one of the first two waypoints
+            if self.waypoint_idx < 2:          
+                if np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and np.abs(yaw - goal_ori) < ori_eps:
+                    self.waypoint_idx += 1 
+            else:
+                done = done or (np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and np.abs(yaw - goal_ori) < ori_eps)
         
         done = done or self.collisions[self.ego_idx]
         return bool(done), False # second return needed for super's step func
@@ -73,44 +84,64 @@ class ParkEnv(F110Env):
         i = self.ego_idx
         pos_radius = 3.0 * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
         ori_radius = np.deg2rad(45.0) * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
-        if hasattr(self, 'goal_pos'):
-            pos_error = np.linalg.norm(self.sim.agent_poses[i, :2] - self.goal_pos, 2)
+        if hasattr(self, 'waypoint_pos'):
+            goal_pos = self.waypoint_pos[self.waypoint_idx]
+            goal_ori = self.waypoint_ori[self.waypoint_idx]
+            pos_error = np.linalg.norm(self.sim.agent_poses[i, :2] - goal_pos, 2)
             yaw = self.poses_theta[i]
             yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
-            ori_error = np.abs(yaw - self.goal_ori)
+            ori_error = np.abs(yaw - goal_ori)
         else:
             # set to large numbers so exponent is effectively 0
             pos_error = 1e3
             ori_error = np.pi
         
         reward += self.POS_SCALE * np.exp(-(pos_error) ** 2 / pos_radius)
-        if pos_error < 0.1:
-            reward += self.ORI_SCALE * np.exp(-(ori_error) ** 2 / ori_radius)
+        # if pos_error < 0.1:
+        reward += self.ORI_SCALE * np.exp(-(ori_error) ** 2 / ori_radius)
+
 
         self.highest_seen_reward = max(reward, self.highest_seen_reward)
         reward /= self.highest_seen_reward
         reward += self.CRASH_SCALE * float(self.collisions[i])
         return reward
+    
+    def _world_to_local(self, vec: np.ndarray):
+        yaw = self.poses_theta[self.ego_idx]
+        c = np.cos(yaw)
+        s = np.sin(yaw)
+        R = np.array([[c,  s],
+                        [-s, c]])
+        return R @ vec
 
     def step(self, action):
         # remap to meaningful values
         action = action * self.action_range
         self.total_steps += 1
+        prev_idx = self.waypoint_idx
         obs, reward, done, truncated, info = super().step(action)
+        # add a bonus to reward if we got to the next target
+        reward += 10.0 * float(prev_idx != self.waypoint_idx)
         # add in for timeout/truncation after 30 sec
         truncated = self.current_time > 30.0
         # add in helpful info stats
-        if hasattr(self, 'goal_pos'):
-            pos_error = self.sim.agent_poses[self.ego_idx, :2] - self.goal_pos
+        if hasattr(self, 'waypoint_pos'):
+            goal_pos = self.waypoint_pos[self.waypoint_idx]
+            goal_ori = self.waypoint_ori[self.waypoint_idx]
+            pos_error = self.sim.agent_poses[self.ego_idx, :2] - goal_pos
             info['custom/position_error'] = np.linalg.norm(pos_error, 2)
             yaw = self.poses_theta[self.ego_idx]
             yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
-            ori_error = yaw - self.goal_ori
+            ori_error = yaw - goal_ori
             info['custom/ori_error'] = np.abs(ori_error)
 
-            # modify observations to be in error coordinates
-            obs['pose'][:2] = pos_error
+            # modify observations to be in error coordinates (modified so that pose error is now just
+            # obstacle position in the body frame)
+            obs['pose'][:2] = self._world_to_local(pos_error)
             obs['pose'][-1] = ori_error
+            obs['waypoint_idx'] = self.waypoint_idx
+            info['custom/waypoint_idx'] = self.waypoint_idx
+
         return obs, reward, done, truncated, info
     
     def _update_map_from_track(self):
@@ -139,20 +170,37 @@ class ParkEnv(F110Env):
         dxs = [-clearance, clearance] # local coordinate x-offset of neighboring cars
     
         # dimensions of other cars blocking spot
-        szx = 0.5
+        szx = 0.75
         szy = 0.3
         x, y, yaw = rand_spot # these yaws are in [-pi, pi]
-        self.goal_pos = rand_spot[:2]
-        self.goal_ori = yaw
+
+        # update waypoints
         R = np.array([[np.cos(yaw), -np.sin(yaw)],
                     [np.sin(yaw),  np.cos(yaw)]])
+        T = np.array([[x],[y]])
+        # first waypoint: ahead to the left of the "car" in front,
+        # second: corner of the car in front at a 45 deg yaw offset
+        # third: the parking spot
+        waypoint_pos = np.array([[clearance + szx / 2, 1.5 * szy],
+                                   [clearance, 1.5 * szy],
+                                   [0.0, 0.0]])
+        waypoint_pos = R @ waypoint_pos.T + T
+        self.waypoint_pos = waypoint_pos.T
+        self.waypoint_ori = np.array([yaw, yaw + np.deg2rad(45.0), yaw])
+        self.waypoint_ori = (self.waypoint_ori + np.pi) % (2 * np.pi) - np.pi
+
+        start_pos = np.array([[-clearance - szx / 2, 1.5 * szy]])
+        start_pos = R @ start_pos.T + T
+        self.start_pose[0, :2] = start_pos.T
+        self.start_pose[0, -1] = yaw
+        
         for dx in dxs:
             # define coordinates of the spot in local coordinates
             car_pts = np.array([[dx, -szy / 2],
                                 [dx, szy / 2],
                                 [dx + np.sign(dx) * szx, szy / 2],
                                 [dx + np.sign(dx) * szx, -szy / 2]])
-            world_pts = R @ car_pts.T + np.array([[x],[y]])
+            world_pts = R @ car_pts.T + T
             world_pts = world_pts.T
             ixy = self._to_img(world_pts[:, 0], world_pts[:, 1])
             cv2.drawContours(self.track.occupancy_map, [ixy], 0, (0, 0, 0), -1)
@@ -170,6 +218,7 @@ class ParkEnv(F110Env):
         '''
         self.update_map(self.map)
         self._generate_parking()
+        self.waypoint_idx = 0
         self.renderer, self.render_spec = make_renderer(
             params=self.params,
             track=self.track,
@@ -200,18 +249,19 @@ class ParkEnv(F110Env):
         # modified: sample another nearby parking spot (along the same wall) and have the car
         # start 0.5 m away from it - this is so that we don't have to worry about difficulties that 
         # come up due to the car spawning in a different corridor than the parking spot
-        rand_idx = np.arange(self.parking_spots.shape[0])
-        rand_idx = np.random.choice(rand_idx)
-        rand_spot = self.parking_spots[rand_idx]
-        x, y, yaw = rand_spot
-        R = np.array([[np.cos(yaw), -np.sin(yaw)],
-                    [np.sin(yaw),  np.cos(yaw)]])
-        local_pt = np.array([0, 0.5])
-        poses = np.zeros((3,))
-        poses[:2] = R @ local_pt[:2] + np.array([x, y])
-        poses[-1] = yaw
-        poses = np.expand_dims(poses, axis=0)
-
+        # rand_idx = np.arange(self.parking_spots.shape[0])
+        # rand_idx = np.random.choice(rand_idx)
+        # rand_spot = self.parking_spots[rand_idx]
+        # x, y, yaw = rand_spot
+        # R = np.array([[np.cos(yaw), -np.sin(yaw)],
+        #             [np.sin(yaw),  np.cos(yaw)]])
+        # local_pt = np.array([0, 0.5])
+        # poses = np.zeros((3,))
+        # poses[:2] = R @ local_pt[:2] + np.array([x, y])
+        # poses[-1] = yaw
+        # poses = np.expand_dims(poses, axis=0)
+        
+        poses = self.start_pose
         assert isinstance(poses, np.ndarray) and poses.shape == (
             self.num_agents,
             3,

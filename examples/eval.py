@@ -40,6 +40,7 @@ def main(n=10, timeout=30):
             action, _states = model.predict(obs, deterministic=True)
             obs, reward, done, trunc, info = eval_env.step(action)
             print(f'{np.linalg.norm(obs["pose"][:2])}, {np.abs(obs["pose"][-1])}, {reward}')
+            print(obs['waypoint_idx'])
             steps += 1
             eval_env.render()
 

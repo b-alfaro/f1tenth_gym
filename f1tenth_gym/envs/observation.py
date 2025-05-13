@@ -378,6 +378,9 @@ class FeaturesObservationRL(Observation):
             ),
             'heading': gym.spaces.Box(
                 low=-self.large_num, high=self.large_num, shape=(2,), dtype=np.float32
+            ),
+            'waypoint_idx': gym.spaces.Discrete(
+                3
             )
         }
         return gym.spaces.Dict(ego_dict)
@@ -446,6 +449,7 @@ def observation_factory(env, type: str | None, **kwargs) -> Observation:
             "pose",
             "vel",
             "heading",
+            "waypoint_idx"
         ]
         return FeaturesObservationRL(env, features=features)
     else:
