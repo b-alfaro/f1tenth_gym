@@ -28,6 +28,7 @@ def main(n=10, timeout=10):
             "control_input": ["speed", "steering_angle"],
             "observation_config": {"type": "rl_parking"},
             "reset_config": {"type": "rl_random_static"},
+            "parking_mode": "perpendicular",
         },
         render_mode="human",
     )
@@ -40,8 +41,10 @@ def main(n=10, timeout=10):
             action, _states = model.predict(obs, deterministic=True)
             # action = np.zeros((1,2))
             obs, reward, done, trunc, info = eval_env.step(action)
+            # if steps % 1000 == 0  or steps == 999:
             print(obs['pose'], reward, eval_env.unwrapped.waypoint_idx)
-            # print(done)
+            if done and not eval_env.unwrapped.collisions[0]:
+                print('done')
             # print(obs['waypoint_idx'])
             steps += 1
             eval_env.render()
@@ -50,6 +53,7 @@ def main(n=10, timeout=10):
             # if done:
             #   obs = env.reset()
         eval_env.close()
+        print('reset')
 
 if __name__ == '__main__':
     main()

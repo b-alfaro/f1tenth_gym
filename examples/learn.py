@@ -30,6 +30,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--save_freq', type=int, default=1_000_000)
     parser.add_argument('--timesteps', type=int, default=1_000_000)
+    parser.add_argument('--model', type=str, default=None)
     args = parser.parse_args()
     run = wandb.init(
         project="parking_ppo",
@@ -48,19 +49,25 @@ def main():
             "control_input": ["speed", "steering_angle"],
             "observation_config": {"type": "rl_parking"},
             "reset_config": {"type": "rl_random_static"},
+            "parking_mode": "perpendicular"
         },
     )
 
     # will be faster on cpu
     name = datetime.datetime.now().strftime("%I:%M%p_%B-%d-%Y")
-    model = PPO(
-        "MultiInputPolicy", env, verbose=1, tensorboard_log=f"runs/{name}", device="cpu", seed=42
-    )
+    if args.model is None:
+        model = PPO(
+            "MultiInputPolicy", env, verbose=1, tensorboard_log=f"runs/{name}", device="cpu", seed=42,
+            ent_coef=0.2
+        )
+    else:
+        model = PPO.load(args.model, print_system_info=True, device="cpu", env=env)
     model.learn(
         total_timesteps=args.timesteps,
         callback=CustomWandCallback(
             gradient_save_freq=0, model_save_path=f"models/{name}", verbose=2, model_save_freq=args.save_freq
         ),
+        reset_num_timesteps=False
     )
     run.finish()
 
