@@ -379,8 +379,8 @@ class FeaturesObservationRL(Observation):
             'heading': gym.spaces.Box(
                 low=-self.large_num, high=self.large_num, shape=(2,), dtype=np.float32
             ),
-            'waypoint_idx': gym.spaces.Discrete(
-                3
+            'waypoint_idx': gym.spaces.Box(
+                low=0.0, high=1.0, shape=(3,), dtype=np.float32
             )
         }
         return gym.spaces.Dict(ego_dict)
@@ -395,15 +395,21 @@ class FeaturesObservationRL(Observation):
         vx = std_state["v_x"]
         vy = std_state["v_y"]
         angvel = std_state["yaw_rate"]
-        
-        # create agent's observation dict
+
+        waypoint_idx = self.env.waypoint_idx if hasattr(self.env, "waypoint_idx") else 0
+        one_hot = np.zeros((3,), dtype=np.float32)
+        if 0 <= waypoint_idx < 3:
+            one_hot[waypoint_idx] = 1.0
+
         ret = {
             "scan": scan.astype(np.float32),
-            "pose": np.array((x,y,theta), dtype=np.float32),
-            "vel": np.array((vx,vy,angvel), dtype=np.float32),
-            "heading": np.array((delta, beta), dtype=np.float32)
+            "pose": np.array((x, y, theta), dtype=np.float32),
+            "vel": np.array((vx, vy, angvel), dtype=np.float32),
+            "heading": np.array((delta, beta), dtype=np.float32),
+            "waypoint_idx": one_hot
         }
         return ret
+
 
 def observation_factory(env, type: str | None, **kwargs) -> Observation:
     type = type or "original"

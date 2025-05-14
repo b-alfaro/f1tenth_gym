@@ -23,7 +23,7 @@ class ParkEnv(F110Env):
                 shape=(1,2),
                 dtype=np.float32,
         )
-        self.action_range = np.array([[self.params['s_max'], 2.0]]) # capping speed at 2 m/s
+        self.action_range = np.array([[2.0, self.params['s_max']]]) # capping speed at 2 m/s
         self.highest_seen_reward = 0
         print('Action ranges:')
         print(self.action_range)
@@ -120,11 +120,13 @@ class ParkEnv(F110Env):
         self.total_steps += 1
         prev_idx = self.waypoint_idx
         obs, reward, done, truncated, info = super().step(action)
+        
         # add a bonus to reward if we got to the next target
         reward += 10.0 * float(prev_idx != self.waypoint_idx)
+        
         # add in for timeout/truncation after 30 sec
         truncated = self.current_time > 30.0
-        # add in helpful info stats
+
         if hasattr(self, 'waypoint_pos'):
             goal_pos = self.waypoint_pos[self.waypoint_idx]
             goal_ori = self.waypoint_ori[self.waypoint_idx]
@@ -135,14 +137,18 @@ class ParkEnv(F110Env):
             ori_error = yaw - goal_ori
             info['custom/ori_error'] = np.abs(ori_error)
 
-            # modify observations to be in error coordinates (modified so that pose error is now just
-            # obstacle position in the body frame)
+            # modify observations to be in error coordinates
             obs['pose'][:2] = self._world_to_local(pos_error)
             obs['pose'][-1] = ori_error
-            obs['waypoint_idx'] = self.waypoint_idx
+            obs['waypoint_idx'] = np.zeros((3,), dtype=np.float32)
+            obs['waypoint_idx'][self.waypoint_idx] = 1.0
             info['custom/waypoint_idx'] = self.waypoint_idx
 
+        if done or truncated:
+            info['terminal_observation'] = obs  # <- 🔧 Fix is here
+
         return obs, reward, done, truncated, info
+
     
     def _update_map_from_track(self):
         self.sim.set_map(self.track)   
