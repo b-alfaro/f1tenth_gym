@@ -39,8 +39,12 @@ def main(n=10, timeout=30):
         while not done and not trunc:
             action, _states = model.predict(obs, deterministic=True)
             obs, reward, done, trunc, info = eval_env.step(action)
-            print(f'{np.linalg.norm(obs["pose"][:2])}, {np.abs(obs["pose"][-1])}, {reward}')
-            print(obs['waypoint_idx'])
+            # print(f'{np.linalg.norm(obs["pose"][:2])}, {np.abs(obs["pose"][-1])}, {reward}')
+            # print(obs['waypoint_idx'])
+            print(f"Position error: {info['custom/position_error']:.2f}")
+            # print(f"Orientation error: {np.abs(obs['pose'][2] - info['goal_theta']):.2f}")
+            # print(f"Velocity: {obs['velocity']:.2f}")
+            print(f"Reward: {reward}")
             steps += 1
             eval_env.render()
 

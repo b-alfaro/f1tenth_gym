@@ -13,7 +13,7 @@ from f1tenth_gym.envs.track.utils import find_track_dir
 
 
 class ParkEnv(F110Env):
-    def __init__(self, config: dict = None, render_mode=None, **kwargs):
+    def __init__(self, config: dict = None, render_mode=None, stage=1, **kwargs):
         super().__init__(config=config, render_mode=render_mode, **kwargs)
         
         # modify action space to be in range (-1, 1)
@@ -25,6 +25,45 @@ class ParkEnv(F110Env):
         )
         self.action_range = np.array([[self.params['s_max'], 2.0]]) # capping speed at 2 m/s
         self.highest_seen_reward = 0
+        self.stage = stage  # Add stage parameter
+        
+        # Stage-specific parameters
+        self.stage_params = {
+            1: {  # Stage 1: fixed position, wide gap
+                'clearance': 1.0,
+                'fixed_spot': True,
+                # Reward weights
+                'alpha_d': -10.0,    # penalize distance
+                'alpha_theta': -2.0,    # penalize misalignment
+                'alpha_v': -0.5,        # penalize moving fast when near target
+                'r_collision': -10.0,   # penalize collisions
+                'r_success': +100.0,    # reward success
+                'r_step_penalty': -0.05  # penalize time
+            },
+            2: {  # Stage 2: fixed position, standard gap
+                'clearance': 0.5,
+                'fixed_spot': True,
+                # Reward weights
+                'alpha_d': -4.0,       
+                'alpha_theta': -1.5,   
+                'alpha_v': -0.4,       
+                'r_collision': -15.0,  
+                'r_success': +100.0,   
+                'r_step_penalty': -0.08
+            },
+            3: {  # Stage 3: random positions
+                'clearance': 0.5,
+                'fixed_spot': False,
+                # Reward weights
+                'alpha_d': -5.0,      
+                'alpha_theta': -2.0,  
+                'alpha_v': -0.5,      
+                'r_collision': -20.0, 
+                'r_success': +100.0,  
+                'r_step_penalty': -0.1
+            }
+        }
+        
         print('Action ranges:')
         print(self.action_range)
 
@@ -39,8 +78,6 @@ class ParkEnv(F110Env):
 
         # read in csv file that contains information about potential parking spots
         track_dir = find_track_dir(self.map)
-
-        ## for now, only doing parking along 1 wall
         parking_file = os.path.join(track_dir, "possible_targets_wall1.csv")
         self.parking_spots = np.genfromtxt(parking_file, delimiter=',')
 
@@ -49,63 +86,75 @@ class ParkEnv(F110Env):
         checking if rollout is done - modified from base environment so that done conditions are
         either crashes or being close to the target parking configuration in both position and 
         orientation
-        
-        important implementation note: the f110 gym in this repo implements yaws in the range 0 to
-        2pi, not -pi to pi, so we need to remap for rewards/checking for done condition
         '''
-
         done = False
-        pos_eps = 0.1 # allowable position error
-        ori_eps = np.deg2rad(5.0) # allowable ori error
+        pos_eps = 0.1  # allowable position error
+        ori_eps = np.deg2rad(5.0)  # allowable ori error
 
         if hasattr(self, 'waypoint_pos'):
             yaw = self.poses_theta[self.ego_idx]
             yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
             curr_pos = self.sim.agent_poses[self.ego_idx, :2]
-            goal_pos = self.waypoint_pos[self.waypoint_idx]
-            goal_ori = self.waypoint_ori[self.waypoint_idx]
-            # check if we need have reached one of the first two waypoints
-            if self.waypoint_idx < 2:          
-                if np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and np.abs(yaw - goal_ori) < ori_eps:
-                    self.waypoint_idx += 1 
-            else:
-                done = done or (np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and np.abs(yaw - goal_ori) < ori_eps)
+            goal_pos = self.waypoint_pos[0]  # Only one waypoint now
+            goal_ori = self.waypoint_ori[0]  # Only one orientation target
+            
+            # Check if we've reached the target
+            done = (np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and 
+                   np.abs(yaw - goal_ori) < ori_eps)
         
         done = done or self.collisions[self.ego_idx]
-        return bool(done), False # second return needed for super's step func
+        return bool(done), False  # second return needed for super's step func
     
-    # reward scales
-    POS_SCALE = 10.0
-    ORI_SCALE = 10.0
-    CRASH_SCALE = -1.0
-    POSE_CURRICULUM = int(2e5)
     def _get_reward(self):
-        reward = 0.0
+        """
+        Compute reward based on distance to target, orientation error, velocity, and terminal conditions
+        """
         i = self.ego_idx
-        pos_radius = 3.0 * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
-        ori_radius = np.deg2rad(45.0) * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
+        
+        # Get current state
         if hasattr(self, 'waypoint_pos'):
-            goal_pos = self.waypoint_pos[self.waypoint_idx]
-            goal_ori = self.waypoint_ori[self.waypoint_idx]
+            goal_pos = self.waypoint_pos[0]
+            goal_ori = self.waypoint_ori[0]
             pos_error = np.linalg.norm(self.sim.agent_poses[i, :2] - goal_pos, 2)
             yaw = self.poses_theta[i]
             yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
-            ori_error = np.abs(yaw - goal_ori)
+            theta_err = yaw - goal_ori
         else:
-            # set to large numbers so exponent is effectively 0
             pos_error = 1e3
-            ori_error = np.pi
+            theta_err = np.pi
         
-        reward += self.POS_SCALE * np.exp(-(pos_error) ** 2 / pos_radius)
-        # if pos_error < 0.1:
-        reward += self.ORI_SCALE * np.exp(-(ori_error) ** 2 / ori_radius)
+        # Get velocity
+        v = np.linalg.norm(self.sim.agent_poses[i, 3:5], 2)  # linear velocity magnitude
+        
+        # Get stage-specific weights
+        params = self.stage_params[self.stage]
+        alpha_d = params['alpha_d']
+        alpha_theta = params['alpha_theta']
+        alpha_v = params['alpha_v']
+        r_collision = params['r_collision']
+        r_success = params['r_success']
+        r_step_penalty = params['r_step_penalty']
 
+        # Base reward
+        reward = alpha_d * pos_error + alpha_theta * abs(theta_err)
 
-        self.highest_seen_reward = max(reward, self.highest_seen_reward)
-        reward /= self.highest_seen_reward
-        reward += self.CRASH_SCALE * float(self.collisions[i])
-        return reward
-    
+        # Encourage stopping near the goal
+        if pos_error < 0.5:
+            reward += alpha_v * abs(v)
+
+        # Constant time penalty
+        reward += r_step_penalty
+
+        # Terminal rewards
+        if self.collisions[i]:
+            reward += r_collision
+            return reward, True
+        elif self._check_done()[0]:  # Check if we've reached the target
+            reward += r_success
+            return reward, True
+
+        return reward, False
+
     def _world_to_local(self, vec: np.ndarray):
         yaw = self.poses_theta[self.ego_idx]
         c = np.cos(yaw)
@@ -118,16 +167,18 @@ class ParkEnv(F110Env):
         # remap to meaningful values
         action = action * self.action_range
         self.total_steps += 1
-        prev_idx = self.waypoint_idx
         obs, reward, done, truncated, info = super().step(action)
-        # add a bonus to reward if we got to the next target
-        reward += 10.0 * float(prev_idx != self.waypoint_idx)
+        
+        # Get new reward and done flag
+        reward, done = self._get_reward()
+        
         # add in for timeout/truncation after 30 sec
         truncated = self.current_time > 30.0
+        
         # add in helpful info stats
         if hasattr(self, 'waypoint_pos'):
-            goal_pos = self.waypoint_pos[self.waypoint_idx]
-            goal_ori = self.waypoint_ori[self.waypoint_idx]
+            goal_pos = self.waypoint_pos[0]  # Only one waypoint now
+            goal_ori = self.waypoint_ori[0]  # Only one orientation target
             pos_error = self.sim.agent_poses[self.ego_idx, :2] - goal_pos
             info['custom/position_error'] = np.linalg.norm(pos_error, 2)
             yaw = self.poses_theta[self.ego_idx]
@@ -135,12 +186,11 @@ class ParkEnv(F110Env):
             ori_error = yaw - goal_ori
             info['custom/ori_error'] = np.abs(ori_error)
 
-            # modify observations to be in error coordinates (modified so that pose error is now just
-            # obstacle position in the body frame)
+            # modify observations to be in error coordinates
             obs['pose'][:2] = self._world_to_local(pos_error)
             obs['pose'][-1] = ori_error
-            obs['waypoint_idx'] = self.waypoint_idx
-            info['custom/waypoint_idx'] = self.waypoint_idx
+            obs['waypoint_idx'] = 0  # Always 0 since we only have one waypoint
+            info['custom/waypoint_idx'] = 0
 
         return obs, reward, done, truncated, info
     
@@ -163,50 +213,53 @@ class ParkEnv(F110Env):
         y /= scale
         return np.column_stack((x, y)).astype(np.int32)
 
-    def _generate_parking(self, clearance=0.5):
-        rand_idx = np.arange(self.parking_spots.shape[0])
-        rand_idx = np.random.choice(rand_idx)
-        rand_spot = self.parking_spots[rand_idx]
-        dxs = [-clearance, clearance] # local coordinate x-offset of neighboring cars
+    def _generate_parking(self):
+        params = self.stage_params[self.stage]
+        if params['fixed_spot']:
+            # Use first parking spot for fixed position stages
+            x, y, yaw = self.parking_spots[0]
+        else:
+            # Random spot for stage 3
+            rand_idx = np.random.choice(np.arange(self.parking_spots.shape[0]))
+            x, y, yaw = self.parking_spots[rand_idx]
+        
+        clearance = params['clearance']
+        dxs = [-clearance, clearance]  # local coordinate x-offset of neighboring cars
     
         # dimensions of other cars blocking spot
         szx = 0.75
-        szy = 0.3
-        x, y, yaw = rand_spot # these yaws are in [-pi, pi]
+        szy = 0.8
 
-        # update waypoints
+        # update waypoints - only use center point
         R = np.array([[np.cos(yaw), -np.sin(yaw)],
                     [np.sin(yaw),  np.cos(yaw)]])
         T = np.array([[x],[y]])
-        # first waypoint: ahead to the left of the "car" in front,
-        # second: corner of the car in front at a 45 deg yaw offset
-        # third: the parking spot
-        waypoint_pos = np.array([[clearance + szx / 2, 1.5 * szy],
-                                   [clearance, 1.5 * szy],
-                                   [0.0, 0.0]])
+        
+        # Single waypoint at center of parking space
+        waypoint_pos = np.array([[0.0, 0.0]])
         waypoint_pos = R @ waypoint_pos.T + T
         self.waypoint_pos = waypoint_pos.T
-        self.waypoint_ori = np.array([yaw, yaw + np.deg2rad(45.0), yaw])
+        self.waypoint_ori = np.array([yaw])  # Single orientation target
         self.waypoint_ori = (self.waypoint_ori + np.pi) % (2 * np.pi) - np.pi
 
+        # Start position remains the same
         start_pos = np.array([[-clearance - szx / 2, 1.5 * szy]])
         start_pos = R @ start_pos.T + T
         self.start_pose[0, :2] = start_pos.T
         self.start_pose[0, -1] = yaw
         
+        # Draw blocking cars
         for dx in dxs:
-            # define coordinates of the spot in local coordinates
             car_pts = np.array([[dx, -szy / 2],
-                                [dx, szy / 2],
-                                [dx + np.sign(dx) * szx, szy / 2],
-                                [dx + np.sign(dx) * szx, -szy / 2]])
+                              [dx, szy / 2],
+                              [dx + np.sign(dx) * szx, szy / 2],
+                              [dx + np.sign(dx) * szx, -szy / 2]])
             world_pts = R @ car_pts.T + T
             world_pts = world_pts.T
             ixy = self._to_img(world_pts[:, 0], world_pts[:, 1])
             cv2.drawContours(self.track.occupancy_map, [ixy], 0, (0, 0, 0), -1)
         
         self._update_map_from_track()
-
 
     def reset(self, seed=None, options=None):
         '''
