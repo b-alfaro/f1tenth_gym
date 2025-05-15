@@ -23,6 +23,7 @@ class ParkEnv(F110Env):
                 shape=(1,2),
                 dtype=np.float32,
         )
+        # Allow for reverse motion and more nuanced control
         self.action_range = np.array([[self.params['s_max'], 2.0]]) # capping speed at 2 m/s
         self.highest_seen_reward = 0
         self.stage = stage  # Add stage parameter
@@ -33,12 +34,13 @@ class ParkEnv(F110Env):
                 'clearance': 1.0,
                 'fixed_spot': True,
                 # Reward weights
-                'k_d': -20.0,    # Reduced position error penalty to allow more movement
-                'k_theta': -10.0, # Increased orientation penalty to encourage proper alignment
-                'k_v': -1.0,     # Increased velocity penalty to encourage careful movement
-                'k_collision': -50.0,  # Increased collision penalty
-                'k_success': +200.0,   # Increased success reward
-                'k_step_penalty': -0.01
+                'k_d': -20.0,    # Increased position error penalty
+                'k_theta': -10.0, # Increased orientation penalty
+                'k_v': -0.3,     # Reduced velocity penalty to allow more movement
+                'k_collision': -50.0,  # Keep high collision penalty
+                'k_success': +500.0,   # Keep strong success reward
+                'k_step_penalty': -0.01,  # Increased step penalty
+                'k_direction': 5.0  # New reward for moving towards target
             },
             2: {  # Stage 2: fixed position, standard gap
                 'clearance': 0.5,
@@ -90,6 +92,7 @@ class ParkEnv(F110Env):
         done = False
         pos_eps = 0.1  # allowable position error
         ori_eps = np.deg2rad(5.0)  # allowable ori error
+        max_distance = 3.0  # maximum allowed distance from target
 
         if hasattr(self, 'waypoint_pos'):
             yaw = self.poses_theta[self.ego_idx]
@@ -98,9 +101,16 @@ class ParkEnv(F110Env):
             goal_pos = self.waypoint_pos[0]  # Only one waypoint now
             goal_ori = self.waypoint_ori[0]  # Only one orientation target
             
+            # Calculate distance to target
+            distance = np.linalg.norm(curr_pos - goal_pos, 2)
+            
             # Check if we've reached the target
-            done = (np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and 
-                   np.abs(yaw - goal_ori) < ori_eps)
+            success = (distance < pos_eps and np.abs(yaw - goal_ori) < ori_eps)
+            
+            # Check if we're too far from target
+            too_far = distance > max_distance
+            
+            done = success or too_far
         
         done = done or self.collisions[self.ego_idx]
         return bool(done), False  # second return needed for super's step func
@@ -115,25 +125,72 @@ class ParkEnv(F110Env):
         if hasattr(self, 'waypoint_pos'):
             goal_pos = self.waypoint_pos[0]
             goal_ori = self.waypoint_ori[0]
-            pos_error = np.linalg.norm(self.sim.agent_poses[i, :2] - goal_pos, 2)
+            curr_pos = self.sim.agent_poses[i, :2]
+            pos_error = np.linalg.norm(curr_pos - goal_pos, 2)
             yaw = self.poses_theta[i]
             yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
             theta_err = yaw - goal_ori
             
-            # Calculate approach angle reward
-            # This encourages the car to approach the parking spot at an angle
-            car_to_goal = goal_pos - self.sim.agent_poses[i, :2]
+            # Calculate approach angle reward with preferred direction
+            car_to_goal = goal_pos - curr_pos
             approach_angle = np.arctan2(car_to_goal[1], car_to_goal[0])
-            angle_diff = np.abs(approach_angle - yaw)
+            
+            # Calculate the preferred approach angle (perpendicular to the parking spot)
+            preferred_angle = goal_ori + np.pi/2  # Approach from the right side
+            
+            # Calculate angle difference considering the preferred direction
+            angle_diff = np.abs(approach_angle - preferred_angle)
             angle_diff = min(angle_diff, 2*np.pi - angle_diff)
-            approach_reward = -5.0 * angle_diff  # Penalize large angle differences
+            
+            # Add extra penalty for approaching from the wrong side
+            if angle_diff > np.pi/2:
+                approach_reward = -8.0 * angle_diff  # Reduced penalty for wrong side
+            else:
+                approach_reward = -4.0 * angle_diff   # Reduced penalty for correct side
+
+            # Add progress-based reward
+            if not hasattr(self, 'last_pos_error'):
+                self.last_pos_error = pos_error
+            progress = self.last_pos_error - pos_error
+            progress_reward = 10.0 * progress  # Reward for getting closer to target
+            self.last_pos_error = pos_error
+
+            # Add velocity reward when moving in the right direction
+            v_x = self.sim.agents[i].standard_state["v_x"]
+            v_y = self.sim.agents[i].standard_state["v_y"]
+            v_vec = np.array([v_x, v_y])
+            to_goal_vec = goal_pos - curr_pos
+            to_goal_vec = to_goal_vec / (np.linalg.norm(to_goal_vec) + 1e-8)  # normalize
+
+            # Project velocity onto direction to goal
+            forward_speed = np.dot(v_vec, to_goal_vec)
+
+            # Direction-based reward
+            direction_reward = self.stage_params[self.stage]['k_direction'] * forward_speed
+
+            # Penalize reverse movement more strongly
+            reverse_penalty = 0
+            if forward_speed < -0.05:  # threshold to ignore small noise
+                reverse_penalty = -20.0 * abs(forward_speed)
+
+            # Reward velocity based on direction to goal, using k_v parameter
+            if forward_speed > 0:
+                velocity_reward = self.stage_params[self.stage]['k_v'] * forward_speed
+            else:
+                velocity_reward = self.stage_params[self.stage]['k_v'] * abs(forward_speed)  # Penalize wrong direction movement
+
+            # Overshoot penalty: penalize if car passes the target along the parking direction
+            goal_to_car = curr_pos - goal_pos
+            goal_dir = np.array([np.cos(goal_ori), np.sin(goal_ori)])
+            overshoot = np.dot(goal_to_car, goal_dir) > 0.2  # 0.2m past the target
+            overshoot_penalty = -50.0 if overshoot else 0
         else:
             pos_error = 1e3
             theta_err = np.pi
             approach_reward = 0
-        
-        # Get velocity
-        v = np.linalg.norm(self.sim.agent_poses[i, 3:5], 2)  # linear velocity magnitude
+            progress_reward = 0
+            velocity_reward = 0
+            overshoot_penalty = 0
         
         # Get stage-specific weights
         params = self.stage_params[self.stage]
@@ -144,12 +201,15 @@ class ParkEnv(F110Env):
         k_success = params['k_success']
         k_step_penalty = params['k_step_penalty']
 
-        # Base reward with approach angle component
-        reward = k_d * pos_error + k_theta * abs(theta_err) + approach_reward
-
-        # Encourage stopping near the goal
-        if pos_error < 0.5:
-            reward += k_v * abs(v)
+        # Base reward with all components
+        reward = (k_d * pos_error + 
+                 k_theta * abs(theta_err) + 
+                 approach_reward + 
+                 progress_reward + 
+                 velocity_reward +
+                 overshoot_penalty +
+                 reverse_penalty +
+                 direction_reward)
 
         # Constant time penalty
         reward += k_step_penalty
@@ -174,7 +234,9 @@ class ParkEnv(F110Env):
 
     def step(self, action):
         # remap to meaningful values
+        # print(f"Action before remapping: {action}")
         action = action * self.action_range
+        # print(f"Action after remapping: {action}")
         self.total_steps += 1
         obs, reward, done, truncated, info = super().step(action)
         
