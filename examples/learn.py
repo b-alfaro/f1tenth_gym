@@ -35,7 +35,7 @@ def main():
     run = wandb.init(
         project="parking_ppo",
         sync_tensorboard=True,
-        save_code=False,
+        save_code=True,
     )
 
     env = gym.make(
@@ -58,7 +58,6 @@ def main():
     if args.model is None:
         model = PPO(
             "MultiInputPolicy", env, verbose=1, tensorboard_log=f"runs/{name}", device="cpu", seed=42,
-            ent_coef=0.2
         )
     else:
         model = PPO.load(args.model, print_system_info=True, device="cpu", env=env)
@@ -67,7 +66,7 @@ def main():
         callback=CustomWandCallback(
             gradient_save_freq=0, model_save_path=f"models/{name}", verbose=2, model_save_freq=args.save_freq
         ),
-        reset_num_timesteps=False
+        reset_num_timesteps=True
     )
     run.finish()
 

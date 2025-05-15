@@ -39,6 +39,7 @@ class ParkEnv(F110Env):
         self.waypoint_idx = 0
         self.start_pose = np.zeros((1,3))
         self.action = np.zeros((1,2))
+        self.ticks = 0
         self.parking_mode = self.config['parking_mode']
 
         # read in csv file that contains information about potential parking spots
@@ -59,7 +60,7 @@ class ParkEnv(F110Env):
         '''
 
         done = False
-        pos_eps = 0.075 # allowable position error
+        pos_eps = 0.15 # allowable position error
         ori_eps = np.deg2rad(5.0) # allowable ori error
 
         if hasattr(self, 'waypoint_pos'):
@@ -69,7 +70,7 @@ class ParkEnv(F110Env):
             goal_pos = self.waypoint_pos[self.waypoint_idx]
             goal_ori = self.waypoint_ori[self.waypoint_idx]
             goal_ori = (goal_ori + np.pi) % (2 * np.pi) - np.pi
-            done = done or (np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and np.abs(yaw - goal_ori) < ori_eps)
+            done = done or np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps #and np.abs(yaw - goal_ori) < ori_eps)
             # check if we need have reached one of the first two waypoints
             # if self.waypoint_idx < 2:          
             #     if np.linalg.norm(curr_pos - goal_pos, 2) < pos_eps and np.abs(yaw - goal_ori) < ori_eps:
@@ -82,16 +83,17 @@ class ParkEnv(F110Env):
     
     # reward scales
     POS_SCALE = 0.5
-    ORI_SCALE = 0.25
-    CRASH_SCALE = -100.0
+    ORI_SCALE = 5.0
+    CRASH_SCALE = -1000.0
     STALL_PENALTY = 0.0
-    POSE_CURRICULUM = int(5e5)
+    POSE_CURRICULUM = int(1e6)
     FAR_PENALTY = -1.0
+    CHECKPOINT_SCALE = 0.0
     def _get_reward(self):
         reward = 0.0
         i = self.ego_idx
         pos_radius = 1.0 * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
-        ori_radius = np.deg2rad(40.0) * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
+        ori_radius = np.deg2rad(30.0) * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
         if hasattr(self, 'waypoint_pos'):
             goal_pos = self.waypoint_pos[self.waypoint_idx]
             goal_ori = self.waypoint_ori[self.waypoint_idx]
@@ -110,12 +112,18 @@ class ParkEnv(F110Env):
             ori_error = np.pi
         
         reward += self.POS_SCALE * np.exp(-(pos_error) ** 2 / pos_radius)
-        reward += self.ORI_SCALE * np.exp(-(ori_error) ** 2 / ori_radius)
+        if pos_error < 1.5:
+            reward += self.ORI_SCALE * np.exp(-(ori_error) ** 2 / ori_radius)
         if pos_error > 5.0:
             reward += self.FAR_PENALTY
-        elif np.abs(self.action[0, 1]) < 0.2:
-            reward += self.STALL_PENALTY
-
+        # elif np.abs(self.action[0, 1]) < 0.2:
+        #     reward += self.STALL_PENALTY
+        # if pos_error > 0.5 and np.linalg.norm(self.action[0], 2) > (1 / np.sqrt(2)):
+        #     reward += 1
+        
+        if self.ticks % 200 == 0:
+            reward += self.CHECKPOINT_SCALE * np.exp(-(pos_error) ** 2)
+            
 
         # self.highest_seen_reward = max(reward, self.highest_seen_reward)
         # reward /= self.highest_seen_reward
@@ -135,13 +143,14 @@ class ParkEnv(F110Env):
         action = action * self.action_range
         self.action = action
         self.total_steps += 1
+        self.ticks += 1 # ticks counts timesteps of current run only
         prev_idx = self.waypoint_idx
         obs, reward, done, truncated, info = super().step(action)
         # add a bonus to reward if we got to the next target
         reward += 10.0 * float(prev_idx != self.waypoint_idx)
         # add in for timeout/truncation after 10 sec
         truncated = self.current_time > 10.0
-        reward += 200.0 * float(done and not self.collisions[self.ego_idx])
+        # reward += 200.0 * float(done and not self.collisions[self.ego_idx])
         # add in helpful info stats
         if hasattr(self, 'waypoint_pos'):
             goal_pos = self.waypoint_pos[self.waypoint_idx]
@@ -152,9 +161,13 @@ class ParkEnv(F110Env):
             ori_error = remap_angle(yaw - goal_ori)
 
             if truncated or done:
-                reward -= np.linalg.norm(pos_error) * 100.0
+                # reward -= np.linalg.norm(pos_error) * 100.0
                 self.final_pos_error = np.linalg.norm(pos_error)
                 self.final_ori_error = np.abs(ori_error)
+                if done and not self.collisions[self.ego_idx]:
+                    reward += min(100.0, 1.0 / (ori_error + 1e-8))
+                # if truncated:
+                #     reward -= 20
 
             if hasattr(self, 'final_pos_error'):
                 info['custom/final_pos_error'] = self.final_pos_error
@@ -233,16 +246,16 @@ class ParkEnv(F110Env):
             clearance = 0.25
             # only look at one waypoint - the final spot
             self.waypoint_idx = 0
-            self.waypoint_pos[0] = T.squeeze()
+            self.waypoint_pos[0] = T.squeeze() + R @ [0.0, 0.2]
             self.waypoint_ori[0] = remap_angle(yaw - np.pi / 2)
             rng =np.random.default_rng(seed=seed)
-            start_x = rng.uniform(-2.5, -0.5)
-            start_y = rng.uniform(0.5, 1.0)
+            start_x = rng.uniform(-2.0, -1.8)
+            start_y = rng.uniform(0.8, 1.1)
             start_pos = np.array([[start_x, start_y]])
             start_pos = R @ start_pos.T + T
-            start_ori = remap_angle(rng.uniform(-np.pi/6, np.pi/6) + yaw)
+            start_ori = remap_angle(rng.uniform(-np.pi/12, np.pi/12) + yaw)
             start_ori = start_ori % (2 * np.pi) # since simulator is in 0 to 2 pi
-            self.start_pose[0, :2] = start_pos.squeeze()
+            self.start_pose[0, :2] =  start_pos.squeeze()
             self.start_pose[0, -1] = start_ori
 
 
@@ -281,7 +294,7 @@ class ParkEnv(F110Env):
         3) remake renderers so that we can see the parking spots at eval time
         4) initialize car at random position using super's reset func and return
         '''
-
+        
         if seed is not None:
             np.random.seed(seed=seed)
         super().reset(seed=seed)
@@ -289,6 +302,7 @@ class ParkEnv(F110Env):
         self.update_map(self.map)
         self.collisions[self.ego_idx] = 1.0
         while self.collisions[self.ego_idx] != 0.0:
+            self.ticks = 0
             self._generate_parking(seed=seed)
             # self.waypoint_idx = 0
             self.renderer, self.render_spec = make_renderer(

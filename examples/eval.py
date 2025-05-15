@@ -42,7 +42,7 @@ def main(n=10, timeout=10):
             # action = np.zeros((1,2))
             obs, reward, done, trunc, info = eval_env.step(action)
             # if steps % 1000 == 0  or steps == 999:
-            print(obs['pose'], reward, eval_env.unwrapped.waypoint_idx)
+            # print(obs['pose'], reward, eval_env.unwrapped.waypoint_idx)
             if done and not eval_env.unwrapped.collisions[0]:
                 print('done')
             # print(obs['waypoint_idx'])
