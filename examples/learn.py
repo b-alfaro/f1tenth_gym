@@ -177,7 +177,8 @@ def main():
         tensorboard_log=f"runs/{name}",
         device="cpu",
         seed=42,
-        learning_rate=linear_schedule(3e-4),
+        learning_rate=3e-4,
+        # learning_rate=linear_schedule(3e-4),
         ent_coef=linear_schedule(0.01)
     )
 

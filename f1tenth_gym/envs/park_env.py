@@ -23,7 +23,8 @@ class ParkEnv(F110Env):
                 shape=(1,2),
                 dtype=np.float32,
         )
-        self.action_range = np.array([[2.0, self.params['s_max']]]) # capping speed at 2 m/s
+        # self.action_range = np.array([[2.0, self.params['s_max']]]) # capping speed at 2 m/s
+        self.action_range = np.array([[self.params['s_max'], 2.0]])
         self.highest_seen_reward = 0
         print('Action ranges:')
         print(self.action_range)
@@ -32,6 +33,11 @@ class ParkEnv(F110Env):
         print(self.observation_space)
 
         self.total_steps = 0
+        self.total_steps_per_wp = [0, 0, 0]
+        self.step_second_wp_first_reached = None
+        self.step_third_wp_first_reached = None
+
+
         self.waypoint_pos = np.zeros((3,2))
         self.waypoint_ori = np.zeros((3,))
         self.waypoint_idx = 0
@@ -82,29 +88,70 @@ class ParkEnv(F110Env):
     def _get_reward(self):
         reward = 0.0
         i = self.ego_idx
-        pos_radius = 3.0 * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
-        ori_radius = np.deg2rad(45.0) * 0.5 ** (self.total_steps // self.POSE_CURRICULUM)
-        if hasattr(self, 'waypoint_pos'):
-            goal_pos = self.waypoint_pos[self.waypoint_idx]
-            goal_ori = self.waypoint_ori[self.waypoint_idx]
-            pos_error = np.linalg.norm(self.sim.agent_poses[i, :2] - goal_pos, 2)
-            yaw = self.poses_theta[i]
-            yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
-            ori_error = np.abs(yaw - goal_ori)
-        else:
-            # set to large numbers so exponent is effectively 0
-            pos_error = 1e3
-            ori_error = np.pi
-        
-        reward += self.POS_SCALE * np.exp(-(pos_error) ** 2 / pos_radius)
-        # if pos_error < 0.1:
-        reward += self.ORI_SCALE * np.exp(-(ori_error) ** 2 / ori_radius)
+        pos = self.sim.agent_poses[i, :2]
+        yaw = self.poses_theta[i]
+        yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
+        vel = self.sim.agents[i].standard_state["v_x"]
+
+        total_steps = self.total_steps_per_wp[self.waypoint_idx]
+        # if self.waypoint_idx == 0:
+        #     total_steps = self.total_first_steps
+        # elif self.waypoint_idx == 1:
+        #     total_steps = self.total_second_steps
+        # else:
+        #     total_steps = self.total_third_steps
+
+        pos_radius = 3.0 * 0.5 ** (total_steps // self.POSE_CURRICULUM)
+        ori_radius = np.deg2rad(45.0) * 0.5 ** (total_steps // self.POSE_CURRICULUM)
+
+        # Reward based only on the current target waypoint
+        goal_pos = self.waypoint_pos[self.waypoint_idx]
+        goal_ori = self.waypoint_ori[self.waypoint_idx]
+
+        pos_error = np.linalg.norm(pos - goal_pos)
+        ori_error = np.abs(yaw - goal_ori)
+
+        weight_multiplier = 1.0 + 0.5 * self.waypoint_idx
+
+        pos_reward = weight_multiplier * self.POS_SCALE * np.exp(-pos_error ** 2 / pos_radius)
+        ori_reward = weight_multiplier * self.ORI_SCALE * np.exp(-ori_error ** 2 / ori_radius)
+        # pos_reward = self.POS_SCALE * np.exp(-pos_error ** 2 / pos_radius)
+        # ori_reward = self.ORI_SCALE * np.exp(-ori_error ** 2 / ori_radius)
+
+        reward += pos_reward + ori_reward
+
+        # Encourage forward or backward movement depending on waypoint
+        if self.waypoint_idx == 0 and vel < 0.01:
+            reward -= 0.5  # moving backward when you should move forward
+        # elif self.waypoint_idx in [1, 2] and vel > -0.01:
+        elif self.waypoint_idx == 1 and vel > -0.01:
+            reward -= 0.5  # moving forward when you should move backward
+
+        # Penalize if moving away from current waypoint
+        if hasattr(self, "prev_pos_error"):
+            if pos_error > self.prev_pos_error + 0.05:  # allow small noise
+                reward -= 0.2
+        self.prev_pos_error = pos_error
+
+        # Penalize moving away from goal based on dot product
+        # if hasattr(self, "prev_pos"):
+        #     goal_vec = goal_pos - self.prev_pos
+        #     move_vec = pos - self.prev_pos
+        #     if np.dot(goal_vec, move_vec) < -0.01:  # negative progress
+        #         reward -= 0.5  # moving away from goal
+        # self.prev_pos = pos.copy()
 
 
-        self.highest_seen_reward = max(reward, self.highest_seen_reward)
-        reward /= self.highest_seen_reward
+        # Penalize crash
         reward += self.CRASH_SCALE * float(self.collisions[i])
+
+        # Step time penalty
+        reward += -0.01
+
         return reward
+
+
+
     
     def _world_to_local(self, vec: np.ndarray):
         yaw = self.poses_theta[self.ego_idx]
@@ -115,16 +162,41 @@ class ParkEnv(F110Env):
         return R @ vec
 
     def step(self, action):
-        # remap to meaningful values
         action = action * self.action_range
         self.total_steps += 1
+
+        # Only increase for first 1 million steps after first reaching next point
+        if self.waypoint_idx == 0 and self.step_second_wp_first_reached:
+            if self.total_steps_per_wp[self.waypoint_idx] < self.step_second_wp_first_reached + 1_000_000:
+                self.total_steps_per_wp[self.waypoint_idx] += 1
+        elif self.waypoint_idx == 1 and self.step_third_wp_first_reached:
+            if self.total_steps_per_wp[self.waypoint_idx] < self.step_third_wp_first_reached + 20_000_000:
+                self.total_steps_per_wp[self.waypoint_idx] += 1
+        else:
+            self.total_steps_per_wp[self.waypoint_idx] += 1
+
+        # if self.waypoint_idx == 0:
+        #     self.total_first_steps += 1
+        # elif self.waypoint_idx == 1:
+        #     self.total_second_steps += 1
+        # else:
+        #     self.total_third_steps += 1
+
         prev_idx = self.waypoint_idx
+
         obs, reward, done, truncated, info = super().step(action)
-        
-        # add a bonus to reward if we got to the next target
-        reward += 10.0 * float(prev_idx != self.waypoint_idx)
-        
-        # add in for timeout/truncation after 30 sec
+
+        # ✅ Bonus for reaching the next waypoint
+        if self.waypoint_idx != prev_idx:
+            if prev_idx == 0 and not self.step_second_wp_first_reached:
+                self.step_second_wp_first_reached = self.total_steps_per_wp[0]
+            elif prev_idx == 1 and not self.step_third_wp_first_reached:
+                self.step_third_wp_first_reached = self.total_steps_per_wp[1]
+
+            # self.total_steps_per_wp[prev_idx] = 0
+            # reward += 10.0
+            reward += 10000.0
+
         truncated = self.current_time > 30.0
 
         if hasattr(self, 'waypoint_pos'):
@@ -137,7 +209,6 @@ class ParkEnv(F110Env):
             ori_error = yaw - goal_ori
             info['custom/ori_error'] = np.abs(ori_error)
 
-            # modify observations to be in error coordinates
             obs['pose'][:2] = self._world_to_local(pos_error)
             obs['pose'][-1] = ori_error
             obs['waypoint_idx'] = np.zeros((3,), dtype=np.float32)
@@ -145,9 +216,10 @@ class ParkEnv(F110Env):
             info['custom/waypoint_idx'] = self.waypoint_idx
 
         if done or truncated:
-            info['terminal_observation'] = obs  # <- 🔧 Fix is here
+            info['terminal_observation'] = obs
 
         return obs, reward, done, truncated, info
+
 
     
     def _update_map_from_track(self):
@@ -192,7 +264,7 @@ class ParkEnv(F110Env):
                                    [0.0, 0.0]])
         waypoint_pos = R @ waypoint_pos.T + T
         self.waypoint_pos = waypoint_pos.T
-        self.waypoint_ori = np.array([yaw, yaw + np.deg2rad(45.0), yaw])
+        self.waypoint_ori = np.array([yaw, yaw + np.deg2rad(30.0), yaw])
         self.waypoint_ori = (self.waypoint_ori + np.pi) % (2 * np.pi) - np.pi
 
         start_pos = np.array([[-clearance - szx / 2, 1.5 * szy]])
