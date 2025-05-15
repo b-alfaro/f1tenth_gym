@@ -33,34 +33,34 @@ class ParkEnv(F110Env):
                 'clearance': 1.0,
                 'fixed_spot': True,
                 # Reward weights
-                'alpha_d': -10.0,    # penalize distance
-                'alpha_theta': -2.0,    # penalize misalignment
-                'alpha_v': -0.5,        # penalize moving fast when near target
-                'r_collision': -10.0,   # penalize collisions
-                'r_success': +100.0,    # reward success
-                'r_step_penalty': -0.05  # penalize time
+                'k_d': -20.0,    # Reduced position error penalty to allow more movement
+                'k_theta': -10.0, # Increased orientation penalty to encourage proper alignment
+                'k_v': -1.0,     # Increased velocity penalty to encourage careful movement
+                'k_collision': -50.0,  # Increased collision penalty
+                'k_success': +200.0,   # Increased success reward
+                'k_step_penalty': -0.01
             },
             2: {  # Stage 2: fixed position, standard gap
                 'clearance': 0.5,
                 'fixed_spot': True,
                 # Reward weights
-                'alpha_d': -4.0,       
-                'alpha_theta': -1.5,   
-                'alpha_v': -0.4,       
-                'r_collision': -15.0,  
-                'r_success': +100.0,   
-                'r_step_penalty': -0.08
+                'k_d': -15.0,       
+                'k_theta': -4.0,    
+                'k_v': -0.4,        
+                'k_collision': -15.0,   
+                'k_success': +100.0,    
+                'k_step_penalty': -0.02 
             },
             3: {  # Stage 3: random positions
                 'clearance': 0.5,
                 'fixed_spot': False,
                 # Reward weights
-                'alpha_d': -5.0,      
-                'alpha_theta': -2.0,  
-                'alpha_v': -0.5,      
-                'r_collision': -20.0, 
-                'r_success': +100.0,  
-                'r_step_penalty': -0.1
+                'k_d': -15.0,      
+                'k_theta': -4.0,   
+                'k_v': -0.5,       
+                'k_collision': -20.0,  
+                'k_success': +100.0,   
+                'k_step_penalty': -0.02
             }
         }
         
@@ -119,38 +119,47 @@ class ParkEnv(F110Env):
             yaw = self.poses_theta[i]
             yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
             theta_err = yaw - goal_ori
+            
+            # Calculate approach angle reward
+            # This encourages the car to approach the parking spot at an angle
+            car_to_goal = goal_pos - self.sim.agent_poses[i, :2]
+            approach_angle = np.arctan2(car_to_goal[1], car_to_goal[0])
+            angle_diff = np.abs(approach_angle - yaw)
+            angle_diff = min(angle_diff, 2*np.pi - angle_diff)
+            approach_reward = -5.0 * angle_diff  # Penalize large angle differences
         else:
             pos_error = 1e3
             theta_err = np.pi
+            approach_reward = 0
         
         # Get velocity
         v = np.linalg.norm(self.sim.agent_poses[i, 3:5], 2)  # linear velocity magnitude
         
         # Get stage-specific weights
         params = self.stage_params[self.stage]
-        alpha_d = params['alpha_d']
-        alpha_theta = params['alpha_theta']
-        alpha_v = params['alpha_v']
-        r_collision = params['r_collision']
-        r_success = params['r_success']
-        r_step_penalty = params['r_step_penalty']
+        k_d = params['k_d']
+        k_theta = params['k_theta']
+        k_v = params['k_v']
+        k_collision = params['k_collision']
+        k_success = params['k_success']
+        k_step_penalty = params['k_step_penalty']
 
-        # Base reward
-        reward = alpha_d * pos_error + alpha_theta * abs(theta_err)
+        # Base reward with approach angle component
+        reward = k_d * pos_error + k_theta * abs(theta_err) + approach_reward
 
         # Encourage stopping near the goal
         if pos_error < 0.5:
-            reward += alpha_v * abs(v)
+            reward += k_v * abs(v)
 
         # Constant time penalty
-        reward += r_step_penalty
+        reward += k_step_penalty
 
         # Terminal rewards
         if self.collisions[i]:
-            reward += r_collision
+            reward += k_collision
             return reward, True
         elif self._check_done()[0]:  # Check if we've reached the target
-            reward += r_success
+            reward += k_success
             return reward, True
 
         return reward, False
@@ -242,8 +251,12 @@ class ParkEnv(F110Env):
         self.waypoint_ori = np.array([yaw])  # Single orientation target
         self.waypoint_ori = (self.waypoint_ori + np.pi) % (2 * np.pi) - np.pi
 
+        # Draw target position
+        target_img_pos = self._to_img(waypoint_pos[0], waypoint_pos[1])[0]
+        cv2.circle(self.track.occupancy_map, (target_img_pos[0], target_img_pos[1]), 2, (0, 0, 255), -1)
+
         # Start position remains the same
-        start_pos = np.array([[-clearance - szx / 2, 1.5 * szy]])
+        start_pos = np.array([[-clearance - szx / 2, 1.0 * szy]])
         start_pos = R @ start_pos.T + T
         self.start_pose[0, :2] = start_pos.T
         self.start_pose[0, -1] = yaw

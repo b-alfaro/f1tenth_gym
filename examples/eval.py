@@ -29,6 +29,7 @@ def main(n=10, timeout=30):
             "observation_config": {"type": "rl_parking"},
             "reset_config": {"type": "rl_random_static"},
         },
+        stage=1,
         render_mode="human",
     )
     for _ in range(n):

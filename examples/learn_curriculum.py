@@ -88,12 +88,12 @@ def train_stage(stage, timesteps, save_freq, load_path=None):
     # Train model
     model.learn(
         total_timesteps=timesteps,
-        callback=CustomWandCallback(
-            gradient_save_freq=0,
-            model_save_path=f"models/stage_{stage}",
-            verbose=2,
-            model_save_freq=save_freq
-        ),
+        # callback=CustomWandCallback(
+        #     gradient_save_freq=0,
+        #     model_save_path=f"models/stage_{stage}",
+        #     verbose=2,
+        #     model_save_freq=save_freq
+        # ),
     )
     
     # Save final model
@@ -114,11 +114,11 @@ def main():
         raise ValueError("Stage must be 1, 2, or 3")
     
     # Initialize wandb
-    run = wandb.init(
-        project="parking_curriculum",
-        sync_tensorboard=True,
-        save_code=False,
-    )
+    # run = wandb.init(
+    #     project="parking_curriculum",
+    #     sync_tensorboard=True,
+    #     save_code=False,
+    # )
     
     print(f"\nStarting training for stage {args.stage}")
     
@@ -154,16 +154,16 @@ def main():
     print(f"Success rate: {success_rate:.2f}")
     print(f"Average reward: {avg_reward:.2f}")
     
-    wandb.log({
-        f"stage_{args.stage}_success_rate": success_rate,
-        f"stage_{args.stage}_avg_reward": avg_reward
-    })
+    # wandb.log({
+    #     f"stage_{args.stage}_success_rate": success_rate,
+    #     f"stage_{args.stage}_avg_reward": avg_reward
+    # })
     
     # If performance is not satisfactory, you might want to retrain
     if success_rate < args.success_threshold:
         print(f"Stage {args.stage} performance below threshold. Consider retraining with different parameters.")
     
-    run.finish()
+    # run.finish()
 
 if __name__ == '__main__':
     main() 
