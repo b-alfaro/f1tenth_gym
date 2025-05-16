@@ -34,24 +34,29 @@ class ParkEnv(F110Env):
                 'clearance': 1.0,
                 'fixed_spot': True,
                 # Reward weights
-                'k_d': -20.0,    # Increased position error penalty
-                'k_theta': -10.0, # Increased orientation penalty
-                'k_v': -0.3,     # Reduced velocity penalty to allow more movement
+                'k_d': -20.0,    # Position error penalty
+                'k_theta': -15.0, # Increased orientation penalty
+                'k_v': -0.3,     # Velocity penalty
+                'k_collision': -50.0,  # Collision penalty
+                'k_success': +500.0,   # Success reward
+                'k_step_penalty': -0.01,  # Step penalty
+                'k_direction': 5.0,  # Direction reward
+                'k_turn': 10.0,  # New reward for turning when far
+                'turn_distance': 1.0  # Distance threshold for turn reward
+            },
+            2: {  # Stage 2: random positions, standard gap
+                'clearance': 0.5,
+                'fixed_spot': False,  # Allow random positions
+                # Reward weights
+                'k_d': -20.0,    # Keep strong position error penalty
+                'k_theta': -15.0, # Keep strong orientation penalty
+                'k_v': -0.3,     # Keep same velocity penalty
                 'k_collision': -50.0,  # Keep high collision penalty
                 'k_success': +500.0,   # Keep strong success reward
-                'k_step_penalty': -0.01,  # Increased step penalty
-                'k_direction': 5.0  # New reward for moving towards target
-            },
-            2: {  # Stage 2: fixed position, standard gap
-                'clearance': 0.5,
-                'fixed_spot': True,
-                # Reward weights
-                'k_d': -15.0,       
-                'k_theta': -4.0,    
-                'k_v': -0.4,        
-                'k_collision': -15.0,   
-                'k_success': +100.0,    
-                'k_step_penalty': -0.02 
+                'k_step_penalty': -0.01,  # Keep same step penalty
+                'k_direction': 5.0,  # Keep direction reward
+                'k_turn': 15.0,  # Increase turn reward for more aggressive turning
+                'turn_distance': 1.5  # Increase turn distance threshold
             },
             3: {  # Stage 3: random positions
                 'clearance': 0.5,
@@ -179,6 +184,19 @@ class ParkEnv(F110Env):
             else:
                 velocity_reward = self.stage_params[self.stage]['k_v'] * abs(forward_speed)  # Penalize wrong direction movement
 
+            # Add turning reward when far from target
+            distance = np.linalg.norm(curr_pos - goal_pos)
+            if distance > self.stage_params[self.stage]['turn_distance']:
+                # Calculate desired turning direction
+                desired_angle = np.arctan2(goal_pos[1] - curr_pos[1], goal_pos[0] - curr_pos[0])
+                angle_diff = np.abs(desired_angle - yaw)
+                angle_diff = min(angle_diff, 2*np.pi - angle_diff)
+                
+                # Reward turning towards the target
+                turn_reward = self.stage_params[self.stage]['k_turn'] * (1.0 - angle_diff/np.pi)
+            else:
+                turn_reward = 0
+
             # Overshoot penalty: penalize if car passes the target along the parking direction
             goal_to_car = curr_pos - goal_pos
             goal_dir = np.array([np.cos(goal_ori), np.sin(goal_ori)])
@@ -190,6 +208,7 @@ class ParkEnv(F110Env):
             approach_reward = 0
             progress_reward = 0
             velocity_reward = 0
+            turn_reward = 0
             overshoot_penalty = 0
         
         # Get stage-specific weights
@@ -207,6 +226,7 @@ class ParkEnv(F110Env):
                  approach_reward + 
                  progress_reward + 
                  velocity_reward +
+                 turn_reward +
                  overshoot_penalty +
                  reverse_penalty +
                  direction_reward)
@@ -306,8 +326,9 @@ class ParkEnv(F110Env):
                     [np.sin(yaw),  np.cos(yaw)]])
         T = np.array([[x],[y]])
         
-        # Single waypoint at center of parking space
-        waypoint_pos = np.array([[0.0, 0.0]])
+        # Single waypoint offset from wall
+        offset = 0.25  # Offset from wall in meters
+        waypoint_pos = np.array([[0.0, offset]])  # Offset in local y-direction
         waypoint_pos = R @ waypoint_pos.T + T
         self.waypoint_pos = waypoint_pos.T
         self.waypoint_ori = np.array([yaw])  # Single orientation target
